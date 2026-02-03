@@ -28,16 +28,16 @@ use serdect::serde::{de, ser, Deserialize, Serialize};
 #[derive(Clone, Copy, Debug)]
 pub struct AffinePoint<C: PrimeCurveParams> {
     /// x-coordinate
-    pub(crate) x: C::FieldElement,
+    pub x: C::FieldElement,
 
     /// y-coordinate
-    pub(crate) y: C::FieldElement,
+    pub y: C::FieldElement,
 
     /// Is this point the point at infinity? 0 = no, 1 = yes
     ///
     /// This is a proxy for [`Choice`], but uses `u8` instead to permit `const`
     /// constructors for `IDENTITY` and `GENERATOR`.
-    pub(crate) infinity: u8,
+    pub infinity: u8,
 }
 
 impl<C> AffinePoint<C>
