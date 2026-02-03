@@ -67,39 +67,22 @@ impl PrimeCurveParams for NistP384 {
     const WIDTH_WORDS: usize = 12;
 
     fn to_affine_accelerated(p: &ProjectivePoint) -> AffinePoint {
-        use primeorder::__risc0::{felt_to_u32_words_le_12, PrimeCurveParams384};
+        use primeorder::__risc0::{projective_to_proj384, PrimeCurveParams384};
 
         if p.z.is_zero().into() {
             return AffinePoint::IDENTITY;
         }
 
-        let z = felt_to_u32_words_le_12::<NistP384>(&p.z);
-        let mut z_inv = [0u32; 12];
-        risc0_bigint2::field::unchecked::modinv_384(
-            &z,
-            &<NistP384 as PrimeCurveParams384>::PRIME_LE_WORDS,
-            &mut z_inv,
-        );
+        // Convert to our projective format and then to affine (single inversion)
+        let proj = projective_to_proj384::<NistP384>(p);
+        let (x_words, y_words, is_identity) = proj.to_affine(&<NistP384 as PrimeCurveParams384>::PRIME_LE_WORDS);
 
-        let mut buffer = [0u32; 12];
-        let x_buffer = felt_to_u32_words_le_12::<NistP384>(&p.x);
-        let y_buffer = felt_to_u32_words_le_12::<NistP384>(&p.y);
+        if is_identity {
+            return AffinePoint::IDENTITY;
+        }
 
-        risc0_bigint2::field::unchecked::modmul_384(
-            &x_buffer,
-            &z_inv,
-            &<NistP384 as PrimeCurveParams384>::PRIME_LE_WORDS,
-            &mut buffer,
-        );
-        let x = <NistP384 as PrimeCurveParams384>::from_u32_words_le(buffer);
-
-        risc0_bigint2::field::unchecked::modmul_384(
-            &y_buffer,
-            &z_inv,
-            &<NistP384 as PrimeCurveParams384>::PRIME_LE_WORDS,
-            &mut buffer,
-        );
-        let y = <NistP384 as PrimeCurveParams384>::from_u32_words_le(buffer);
+        let x = <NistP384 as PrimeCurveParams384>::from_u32_words_le(x_words);
+        let y = <NistP384 as PrimeCurveParams384>::from_u32_words_le(y_words);
 
         AffinePoint { x, y, infinity: 0 }
     }

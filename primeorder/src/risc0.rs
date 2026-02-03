@@ -440,8 +440,313 @@ pub(crate) mod ec_impl_256 {
 }
 
 // ============================================================================
-// EC operations for 384-bit curves
+// EC operations for 384-bit curves - Proper Projective Implementation
 // ============================================================================
+
+/// Projective point in Jacobian coordinates stored as raw words (standard form, not Montgomery).
+/// This avoids Montgomery conversions during EC operations.
+#[derive(Clone, Copy)]
+pub struct Projective384 {
+    pub x: [u32; 12],
+    pub y: [u32; 12],
+    pub z: [u32; 12],
+}
+
+impl Projective384 {
+    /// Identity point (0, 1, 0)
+    pub const IDENTITY: Self = Self {
+        x: [0; 12],
+        y: [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        z: [0; 12],
+    };
+
+    /// Check if this is the identity point
+    #[inline]
+    pub fn is_identity(&self) -> bool {
+        self.z == [0u32; 12]
+    }
+
+    /// Point doubling using standard projective coordinates for a = -3
+    /// Implements RCB 2015 Algorithm 6
+    pub fn double(&self, prime: &[u32; 12], b: &[u32; 12]) -> Self {
+        if self.is_identity() {
+            return Self::IDENTITY;
+        }
+
+        let mut tmp = [0u32; 12];
+        let mut tmp2 = [0u32; 12];
+
+        // xx = X^2
+        let mut xx = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.x, &self.x, prime, &mut xx);
+
+        // yy = Y^2
+        let mut yy = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.y, &self.y, prime, &mut yy);
+
+        // zz = Z^2
+        let mut zz = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.z, &self.z, prime, &mut zz);
+
+        // xy2 = 2*X*Y
+        let mut xy2 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.x, &self.y, prime, &mut xy2);
+        risc0_bigint2::field::unchecked::modadd_384(&xy2, &xy2, prime, &mut tmp);
+        xy2 = tmp;
+
+        // xz2 = 2*X*Z
+        let mut xz2 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.x, &self.z, prime, &mut xz2);
+        risc0_bigint2::field::unchecked::modadd_384(&xz2, &xz2, prime, &mut tmp);
+        xz2 = tmp;
+
+        // bzz_part = b*zz - xz2
+        let mut bzz = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(b, &zz, prime, &mut bzz);
+        let mut bzz_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&bzz, &xz2, prime, &mut bzz_part);
+
+        // bzz3_part = 3 * bzz_part
+        let mut bzz3_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&bzz_part, &bzz_part, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &bzz_part, prime, &mut bzz3_part);
+
+        // yy_m_bzz3 = yy - bzz3_part
+        let mut yy_m_bzz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&yy, &bzz3_part, prime, &mut yy_m_bzz3);
+
+        // yy_p_bzz3 = yy + bzz3_part
+        let mut yy_p_bzz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&yy, &bzz3_part, prime, &mut yy_p_bzz3);
+
+        // y_frag = yy_p_bzz3 * yy_m_bzz3
+        let mut y_frag = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&yy_p_bzz3, &yy_m_bzz3, prime, &mut y_frag);
+
+        // x_frag = yy_m_bzz3 * xy2
+        let mut x_frag = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&yy_m_bzz3, &xy2, prime, &mut x_frag);
+
+        // zz3 = 3 * zz
+        let mut zz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&zz, &zz, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &zz, prime, &mut zz3);
+
+        // bxz2_part = b*xz2 - zz3 - xx
+        let mut bxz2 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(b, &xz2, prime, &mut bxz2);
+        risc0_bigint2::field::unchecked::modsub_384(&bxz2, &zz3, prime, &mut tmp);
+        let mut bxz2_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&tmp, &xx, prime, &mut bxz2_part);
+
+        // bxz6_part = 3 * bxz2_part
+        let mut bxz6_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&bxz2_part, &bxz2_part, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &bxz2_part, prime, &mut bxz6_part);
+
+        // xx3_m_zz3 = 3*xx - zz3
+        let mut xx3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&xx, &xx, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &xx, prime, &mut xx3);
+        let mut xx3_m_zz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&xx3, &zz3, prime, &mut xx3_m_zz3);
+
+        // y3 = y_frag + xx3_m_zz3 * bxz6_part
+        risc0_bigint2::field::unchecked::modmul_384(&xx3_m_zz3, &bxz6_part, prime, &mut tmp);
+        let mut y3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&y_frag, &tmp, prime, &mut y3);
+
+        // yz2 = 2*Y*Z
+        let mut yz2 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.y, &self.z, prime, &mut yz2);
+        risc0_bigint2::field::unchecked::modadd_384(&yz2, &yz2, prime, &mut tmp);
+        yz2 = tmp;
+
+        // x3 = x_frag - bxz6_part * yz2
+        risc0_bigint2::field::unchecked::modmul_384(&bxz6_part, &yz2, prime, &mut tmp);
+        let mut x3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&x_frag, &tmp, prime, &mut x3);
+
+        // z3 = 4 * yz2 * yy
+        risc0_bigint2::field::unchecked::modmul_384(&yz2, &yy, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &tmp, prime, &mut tmp2);
+        let mut z3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&tmp2, &tmp2, prime, &mut z3);
+
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    /// Point addition using standard projective coordinates for a = -3
+    /// Implements RCB 2015 Algorithm 4
+    pub fn add(&self, other: &Self, prime: &[u32; 12], b: &[u32; 12]) -> Self {
+        if self.is_identity() {
+            return *other;
+        }
+        if other.is_identity() {
+            return *self;
+        }
+
+        let mut tmp = [0u32; 12];
+        let mut tmp2 = [0u32; 12];
+
+        // xx = X1 * X2
+        let mut xx = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.x, &other.x, prime, &mut xx);
+
+        // yy = Y1 * Y2
+        let mut yy = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.y, &other.y, prime, &mut yy);
+
+        // zz = Z1 * Z2
+        let mut zz = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.z, &other.z, prime, &mut zz);
+
+        // xy_pairs = (X1+Y1)*(X2+Y2) - xx - yy
+        let mut x1_p_y1 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&self.x, &self.y, prime, &mut x1_p_y1);
+        let mut x2_p_y2 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&other.x, &other.y, prime, &mut x2_p_y2);
+        let mut xy_pairs = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&x1_p_y1, &x2_p_y2, prime, &mut xy_pairs);
+        risc0_bigint2::field::unchecked::modsub_384(&xy_pairs, &xx, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modsub_384(&tmp, &yy, prime, &mut xy_pairs);
+
+        // yz_pairs = (Y1+Z1)*(Y2+Z2) - yy - zz
+        let mut y1_p_z1 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&self.y, &self.z, prime, &mut y1_p_z1);
+        let mut y2_p_z2 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&other.y, &other.z, prime, &mut y2_p_z2);
+        let mut yz_pairs = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&y1_p_z1, &y2_p_z2, prime, &mut yz_pairs);
+        risc0_bigint2::field::unchecked::modsub_384(&yz_pairs, &yy, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modsub_384(&tmp, &zz, prime, &mut yz_pairs);
+
+        // xz_pairs = (X1+Z1)*(X2+Z2) - xx - zz
+        let mut x1_p_z1 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&self.x, &self.z, prime, &mut x1_p_z1);
+        let mut x2_p_z2 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&other.x, &other.z, prime, &mut x2_p_z2);
+        let mut xz_pairs = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&x1_p_z1, &x2_p_z2, prime, &mut xz_pairs);
+        risc0_bigint2::field::unchecked::modsub_384(&xz_pairs, &xx, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modsub_384(&tmp, &zz, prime, &mut xz_pairs);
+
+        // bzz_part = xz_pairs - b*zz (uses b, not 3*b)
+        let mut bzz = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(b, &zz, prime, &mut bzz);
+        let mut bzz_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&xz_pairs, &bzz, prime, &mut bzz_part);
+
+        // bzz3_part = 3 * bzz_part (double + add)
+        let mut bzz3_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&bzz_part, &bzz_part, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &bzz_part, prime, &mut bzz3_part);
+
+        // yy_m_bzz3 = yy - bzz3_part
+        let mut yy_m_bzz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&yy, &bzz3_part, prime, &mut yy_m_bzz3);
+
+        // yy_p_bzz3 = yy + bzz3_part
+        let mut yy_p_bzz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&yy, &bzz3_part, prime, &mut yy_p_bzz3);
+
+        // zz3 = 3 * zz
+        let mut zz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&zz, &zz, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &zz, prime, &mut zz3);
+
+        // bxz_part = b*xz_pairs - zz3 - xx (uses b, not 3*b)
+        let mut bxz = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(b, &xz_pairs, prime, &mut bxz);
+        risc0_bigint2::field::unchecked::modsub_384(&bxz, &zz3, prime, &mut tmp);
+        let mut bxz_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&tmp, &xx, prime, &mut bxz_part);
+
+        // bxz3_part = 3 * bxz_part
+        let mut bxz3_part = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&bxz_part, &bxz_part, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &bxz_part, prime, &mut bxz3_part);
+
+        // xx3_m_zz3 = 3*xx - zz3
+        let mut xx3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modadd_384(&xx, &xx, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&tmp, &xx, prime, &mut xx3);
+        let mut xx3_m_zz3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modsub_384(&xx3, &zz3, prime, &mut xx3_m_zz3);
+
+        // x3 = yy_p_bzz3 * xy_pairs - yz_pairs * bxz3_part
+        let mut x3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&yy_p_bzz3, &xy_pairs, prime, &mut x3);
+        risc0_bigint2::field::unchecked::modmul_384(&yz_pairs, &bxz3_part, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modsub_384(&x3, &tmp, prime, &mut tmp2);
+        x3 = tmp2;
+
+        // y3 = yy_p_bzz3 * yy_m_bzz3 + xx3_m_zz3 * bxz3_part
+        let mut y3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&yy_p_bzz3, &yy_m_bzz3, prime, &mut y3);
+        risc0_bigint2::field::unchecked::modmul_384(&xx3_m_zz3, &bxz3_part, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&y3, &tmp, prime, &mut tmp2);
+        y3 = tmp2;
+
+        // z3 = yy_m_bzz3 * yz_pairs + xy_pairs * xx3_m_zz3
+        let mut z3 = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&yy_m_bzz3, &yz_pairs, prime, &mut z3);
+        risc0_bigint2::field::unchecked::modmul_384(&xy_pairs, &xx3_m_zz3, prime, &mut tmp);
+        risc0_bigint2::field::unchecked::modadd_384(&z3, &tmp, prime, &mut tmp2);
+        z3 = tmp2;
+
+        Self { x: x3, y: y3, z: z3 }
+    }
+
+    /// Convert to affine coordinates (requires one inversion)
+    /// Standard projective: x = X/Z, y = Y/Z
+    pub fn to_affine(&self, prime: &[u32; 12]) -> ([u32; 12], [u32; 12], bool) {
+        if self.is_identity() {
+            return ([0; 12], [0; 12], true);
+        }
+
+        // z_inv = Z^(-1)
+        let mut z_inv = [0u32; 12];
+        risc0_bigint2::field::unchecked::modinv_384(&self.z, prime, &mut z_inv);
+
+        // x = X * Z^(-1)
+        let mut x = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.x, &z_inv, prime, &mut x);
+
+        // y = Y * Z^(-1)
+        let mut y = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&self.y, &z_inv, prime, &mut y);
+
+        (x, y, false)
+    }
+}
+
+/// Convert from primeorder ProjectivePoint to our Projective384
+pub fn projective_to_proj384<C>(p: &ProjectivePoint<C>) -> Projective384
+where
+    C: PrimeCurveParams384,
+{
+    Projective384 {
+        x: felt_to_u32_words_le_12::<C>(&p.x),
+        y: felt_to_u32_words_le_12::<C>(&p.y),
+        z: felt_to_u32_words_le_12::<C>(&p.z),
+    }
+}
+
+/// Convert from Projective384 back to primeorder ProjectivePoint
+pub fn proj384_to_projective<C>(p: &Projective384) -> ProjectivePoint<C>
+where
+    C: PrimeCurveParams384,
+{
+    if p.is_identity() {
+        return ProjectivePoint::IDENTITY;
+    }
+    ProjectivePoint {
+        x: C::from_u32_words_le(p.x),
+        y: C::from_u32_words_le(p.y),
+        z: C::from_u32_words_le(p.z),
+    }
+}
 
 #[inline]
 fn affine_to_r0_affine_384<C>(affine: &AffinePoint<C>) -> ec::AffinePoint<12, C>
@@ -457,30 +762,6 @@ where
     ec::AffinePoint::new_unchecked(x, y)
 }
 
-pub(crate) fn projective_to_affine_384<C>(p: &ProjectivePoint<C>) -> ec::AffinePoint<12, C>
-where
-    C: PrimeCurveParams384,
-{
-    let aff = p.to_affine();
-    affine_to_r0_affine_384(&aff)
-}
-
-pub(crate) fn affine_to_projective_384<C>(affine: &ec::AffinePoint<12, C>) -> ProjectivePoint<C>
-where
-    C: PrimeCurveParams384,
-{
-    if let Some(value) = affine.as_u32s() {
-        // This should only not be within the modulus with a malicious host, panic in that case.
-        let x = C::from_u32_words_le(value[0]);
-        let y = C::from_u32_words_le(value[1]);
-
-        let affine = AffinePoint { x, y, infinity: 0 };
-        ProjectivePoint::from(affine)
-    } else {
-        ProjectivePoint::IDENTITY
-    }
-}
-
 pub(crate) fn scalar_to_words_12<C>(s: &Scalar<C>) -> [u32; 12]
 where
     C: PrimeCurveParams384,
@@ -490,29 +771,100 @@ where
 
 pub mod ec_impl_384 {
     use super::*;
+    use elliptic_curve::Field;
 
+    /// Scalar multiplication using risc0-bigint2's accelerated EC operations.
+    /// This delegates to the AffinePoint::mul method which uses hardware-accelerated
+    /// double and add operations via precompiled blobs.
+    ///
+    /// Optimization: converts directly from ProjectivePoint to risc0 AffinePoint
+    /// without going through primeorder AffinePoint's Montgomery form.
     pub fn mul<C>(lhs: &ProjectivePoint<C>, rhs: &Scalar<C>) -> ProjectivePoint<C>
     where
         C: PrimeCurveParams384,
     {
         let scalar = scalar_to_words_12::<C>(rhs);
-        let affine = projective_to_affine_384::<C>(lhs);
+        let affine = projective_to_r0_affine_direct::<C>(lhs);
 
-        let mut result = risc0_bigint2::ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
+        if affine.is_identity() {
+            return ProjectivePoint::IDENTITY;
+        }
+
+        let mut result = ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
         affine.mul(&scalar, &mut result);
-        return affine_to_projective_384(&result);
+        return r0_affine_to_projective_direct(&result);
+    }
+
+    /// z = 1 in standard form (little-endian)
+    const Z_ONE: [u32; 12] = [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+    /// Convert ProjectivePoint directly to risc0 AffinePoint.
+    /// This avoids the intermediate primeorder AffinePoint and its Montgomery form conversions.
+    /// Optimized: skips modinv/modmul when z=1 (common case for points from affine).
+    fn projective_to_r0_affine_direct<C>(p: &ProjectivePoint<C>) -> ec::AffinePoint<12, C>
+    where
+        C: PrimeCurveParams384,
+    {
+        // Convert projective coordinates from Montgomery to standard form
+        let x_std = felt_to_u32_words_le_12::<C>(&p.x);
+        let y_std = felt_to_u32_words_le_12::<C>(&p.y);
+        let z_std = felt_to_u32_words_le_12::<C>(&p.z);
+
+        // Check if this is the identity (z == 0)
+        if z_std == [0u32; 12] {
+            return ec::AffinePoint::IDENTITY;
+        }
+
+        // Fast path: if z == 1, no division needed
+        if z_std == Z_ONE {
+            return ec::AffinePoint::new_unchecked(x_std, y_std);
+        }
+
+        // Compute affine coordinates: x = X/Z, y = Y/Z
+        let prime = &C::PRIME_LE_WORDS;
+        let mut z_inv = [0u32; 12];
+        risc0_bigint2::field::unchecked::modinv_384(&z_std, prime, &mut z_inv);
+
+        let mut x_aff = [0u32; 12];
+        let mut y_aff = [0u32; 12];
+        risc0_bigint2::field::unchecked::modmul_384(&x_std, &z_inv, prime, &mut x_aff);
+        risc0_bigint2::field::unchecked::modmul_384(&y_std, &z_inv, prime, &mut y_aff);
+
+        ec::AffinePoint::new_unchecked(x_aff, y_aff)
+    }
+
+    /// Convert risc0 AffinePoint directly back to ProjectivePoint.
+    /// This avoids the intermediate primeorder AffinePoint.
+    fn r0_affine_to_projective_direct<C>(affine: &ec::AffinePoint<12, C>) -> ProjectivePoint<C>
+    where
+        C: PrimeCurveParams384,
+    {
+        if let Some(coords) = affine.as_u32s() {
+            // Convert from standard form to Montgomery form
+            let x = C::from_u32_words_le(coords[0]);
+            let y = C::from_u32_words_le(coords[1]);
+
+            // Create ProjectivePoint with z = 1 (in Montgomery form)
+            ProjectivePoint {
+                x,
+                y,
+                z: C::FieldElement::ONE,
+            }
+        } else {
+            ProjectivePoint::IDENTITY
+        }
     }
 
     pub fn add<C>(lhs: &ProjectivePoint<C>, rhs: &ProjectivePoint<C>) -> ProjectivePoint<C>
     where
         C: PrimeCurveParams384,
     {
-        let lhs = projective_to_affine_384::<C>(lhs);
-        let rhs = projective_to_affine_384::<C>(rhs);
+        let lhs = projective_to_r0_affine_direct::<C>(lhs);
+        let rhs = projective_to_r0_affine_direct::<C>(rhs);
 
-        let mut result = risc0_bigint2::ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
+        let mut result = ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
         lhs.add(&rhs, &mut result);
-        return affine_to_projective_384(&result);
+        return r0_affine_to_projective_direct(&result);
     }
 
     #[inline]
@@ -520,23 +872,23 @@ pub mod ec_impl_384 {
     where
         C: PrimeCurveParams384,
     {
-        let lhs = projective_to_affine_384::<C>(lhs);
+        let lhs = projective_to_r0_affine_direct::<C>(lhs);
         let rhs = affine_to_r0_affine_384(rhs);
 
-        let mut result = risc0_bigint2::ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
+        let mut result = ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
         lhs.add(&rhs, &mut result);
-        return affine_to_projective_384(&result);
+        return r0_affine_to_projective_direct(&result);
     }
 
     pub fn double<C>(point: &ProjectivePoint<C>) -> ProjectivePoint<C>
     where
         C: PrimeCurveParams384,
     {
-        let point = projective_to_affine_384::<C>(point);
+        let point = projective_to_r0_affine_direct::<C>(point);
 
-        let mut result = risc0_bigint2::ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
+        let mut result = ec::AffinePoint::new_unchecked([0u32; 12], [0u32; 12]);
         point.double(&mut result);
-        return affine_to_projective_384(&result);
+        return r0_affine_to_projective_direct(&result);
     }
 }
 

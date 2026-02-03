@@ -181,9 +181,22 @@ where
                 Self::decompress(x, Choice::from(y_is_odd as u8))
             }
             sec1::Coordinates::Uncompressed { x, y } => {
-                C::FieldElement::from_repr(*y).and_then(|y| {
-                    Self::decompress(x, y.is_odd())
-                        .and_then(|point| CtOption::new(point, point.y.ct_eq(&y)))
+                // For uncompressed points, verify the curve equation directly
+                // instead of computing sqrt (which is expensive).
+                // Check: y² = x³ + ax + b
+                C::FieldElement::from_repr(*x).and_then(|x| {
+                    C::FieldElement::from_repr(*y).and_then(|y| {
+                        // Compute y²
+                        let y2 = y.square();
+                        // Compute x³ + ax + b
+                        let x2 = x.square();
+                        let x3 = x2 * x;
+                        let ax = C::EQUATION_A * x;
+                        let rhs = x3 + ax + C::EQUATION_B;
+                        // Verify y² == x³ + ax + b
+                        let is_on_curve = y2.ct_eq(&rhs);
+                        CtOption::new(Self { x, y, infinity: 0 }, is_on_curve)
+                    })
                 })
             }
         }

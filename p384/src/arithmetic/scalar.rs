@@ -100,7 +100,67 @@ primeorder::impl_mont_field_element!(
 impl Scalar {
     /// Compute [`Scalar`] inversion: `1 / self`.
     pub fn invert(&self) -> CtOption<Self> {
+        #[cfg(all(target_os = "zkvm", target_arch = "riscv32"))]
+        {
+            // NOTE: This is not constant time with respect to zero in zkvm,
+            // as modinv will panic in the host for zero input.
+            if self.is_zero().into() {
+                return CtOption::new(Scalar::ZERO, Choice::from(0));
+            }
+            let result = self.invert_accelerated();
+            return CtOption::new(result, Choice::from(1));
+        }
+
+        #[cfg(not(all(target_os = "zkvm", target_arch = "riscv32")))]
         CtOption::new(self.invert_unchecked(), !self.is_zero())
+    }
+
+    /// zkVM-accelerated scalar inversion using risc0-bigint2
+    #[cfg(all(target_os = "zkvm", target_arch = "riscv32"))]
+    fn invert_accelerated(&self) -> Self {
+        use crate::__risc0::SECP384R1_ORDER;
+        use elliptic_curve::bigint::Encoding;
+
+        // Convert from Montgomery form to standard form
+        let canonical = self.to_canonical();
+        let input_bytes = canonical.to_le_bytes();
+        let input_words: [u32; 12] = bytemuck::cast(input_bytes);
+
+        // Compute modular inverse
+        let mut output_words = [0u32; 12];
+        risc0_bigint2::field::modinv_384(
+            &input_words,
+            &SECP384R1_ORDER,
+            &mut output_words,
+        );
+
+        // Convert back to Montgomery form
+        Self::from_words_le(output_words)
+    }
+
+    /// Convert from little-endian words (standard form) to Montgomery form
+    #[cfg(all(target_os = "zkvm", target_arch = "riscv32"))]
+    fn from_words_le(words: [u32; 12]) -> Self {
+        use elliptic_curve::bigint::Encoding;
+
+        // R = 2^384 mod n (Montgomery radix for scalar field)
+        // This is precomputed for the scalar field order
+        const R_LE: [u32; 12] = [
+            0x333ad68d, 0x1313e695, 0xb74f5885, 0xa7e5f24d, 0x0bc8d220, 0x389cb27e,
+            0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+        ];
+
+        // Multiply by R to convert to Montgomery form: a_std * R mod n = a_mont
+        let mut mont_words = [0u32; 12];
+        risc0_bigint2::field::modmul_384(
+            &words,
+            &R_LE,
+            &crate::__risc0::SECP384R1_ORDER,
+            &mut mont_words,
+        );
+
+        let uint = U384::from_le_slice(bytemuck::cast_slice::<u32, u8>(&mont_words));
+        Self(uint)
     }
 
     /// Returns the multiplicative inverse of self.
